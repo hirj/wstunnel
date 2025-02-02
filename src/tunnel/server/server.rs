@@ -3,6 +3,8 @@ use futures_util::FutureExt;
 use http_body_util::Either;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use crate::protocols;
 use crate::tunnel::{try_to_sock_addr, LocalProtocol, RemoteAddr};
@@ -16,6 +18,7 @@ use parking_lot::Mutex;
 use socket2::SockRef;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -32,7 +35,7 @@ use crate::tunnel::server::handler_websocket::ws_server_upgrade;
 use crate::tunnel::server::reverse_tunnel::ReverseTunnelServer;
 use crate::tunnel::server::utils::{
     bad_request, extract_path_prefix, extract_tunnel_info, extract_x_forwarded_for, find_mapped_port, validate_tunnel,
-    HttpResponse,
+    HttpResponse, extract_user_creds,
 };
 use crate::tunnel::tls_reloader::TlsReloader;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -63,6 +66,29 @@ pub struct WsServerConfig {
     pub restriction_config: Option<PathBuf>,
     pub http_proxy: Option<Url>,
 }
+
+fn wstauthmap() -> &'static HashMap<String, String> {
+    static HASHMAP: OnceLock<HashMap<String, String>> = OnceLock::new();
+    HASHMAP.get_or_init(|| {
+        let mut m = HashMap::new();
+        let wstunnel_auth_file = "/etc/wstunnel/wstunnel.auth";
+        if Path::new(&wstunnel_auth_file).exists() {
+            let contents = std::fs::read_to_string(&wstunnel_auth_file).unwrap();
+            for line in contents.lines() {
+               info!("Line from auth file is {}", line);
+            //   let parts = line.split(",").collect::<Vec<_>>();
+               m.insert( line.to_owned(), "".to_owned());
+           }
+           //m.insert( "on", "true");
+           info!("Size of hashmap is {}", m.len());
+        } else {
+            info!("Wsauth not configured.");
+            //m.insert("on", "false");
+        }        
+        m
+    })
+}
+
 
 #[derive(Clone)]
 pub struct WsServer {
@@ -110,7 +136,18 @@ impl WsServer {
                 return Err(bad_request());
             }
         }
-
+//////////////////////////////////////////////////////////////
+        if wstauthmap().len() > 0 {
+            info!("Continuing with checks as there are '{}' users", wstauthmap().len());
+            let user_auth = extract_user_creds(req);
+            let str = &user_auth.unwrap_or("wst").to_ascii_lowercase();
+            info!("Checking for auth header {}", str);
+            if str.len() < 66 || false == wstauthmap().contains_key(str) {
+                warn!("Rejecting connection with bad user auth info: {}", str);
+                return Err(bad_request());
+            }
+        }
+/////////////////////////////////////////////////////////////
         let jwt = extract_tunnel_info(req)?;
 
         Span::current().record("id", &jwt.claims.id);
