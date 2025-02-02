@@ -61,6 +61,14 @@ pub(super) fn extract_x_forwarded_for(req: &Request<Incoming>) -> Option<(IpAddr
 }
 
 #[inline]
+pub(super) fn extract_user_creds(req: &Request<Incoming>) -> Option<&str> {
+    let wstunnel_creds = req.headers().get("wstunnel-auth")?;
+    let usercreds: Option<&str> = Some(wstunnel_creds.to_str().unwrap_or_default());
+    usercreds
+}
+
+
+#[inline]
 pub(super) fn extract_path_prefix(path: &str) -> Result<&str, PathPrefixErr> {
     if !path.starts_with('/') {
         return Err(PathPrefixErr::BadPathPrefix);
